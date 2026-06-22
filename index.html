@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aliquot Plate Excel Generator</title>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f5f7fb;
+      margin: 0;
+      padding: 30px;
+      color: #222;
+    }
+    .container {
+      max-width: 900px;
+      margin: auto;
+      background: white;
+      padding: 28px;
+      border-radius: 12px;
+      box-shadow: 0 4px 18px rgba(0,0,0,0.08);
+    }
+    h1 { margin-top: 0; }
+    label {
+      display: block;
+      font-weight: bold;
+      margin-top: 18px;
+    }
+    input, select, button {
+      width: 100%;
+      padding: 10px;
+      margin-top: 6px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 15px;
+      box-sizing: border-box;
+    }
+    button {
+      background: #1f6feb;
+      color: white;
+      border: none;
+      font-weight: bold;
+      margin-top: 24px;
+      cursor: pointer;
+    }
+    button:hover { background: #185abc; }
+    .note {
+      background: #eef5ff;
+      padding: 12px;
+      border-left: 4px solid #1f6feb;
+      margin-bottom: 20px;
+      border-radius: 6px;
+    }
+    .error {
+      background: #ffecec;
+      color: #a40000;
+      padding: 12px;
+      margin-top: 16px;
+      border-radius: 6px;
+      display: none;
+    }
+    .success {
+      background: #ecfff1;
+      color: #166534;
+      padding: 12px;
+      margin-top: 16px;
+      border-radius: 6px;
+      display: none;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-top: 14px;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 8px;
+      text-align: left;
+    }
+    th { background: #f0f3f8; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .stat-card {
+      background: #f8fafc;
+      padding: 14px;
+      border-radius: 8px;
+      text-align: center;
+      border: 1px solid #e5e7eb;
+    }
+    .stat-card strong {
+      display: block;
+      font-size: 22px;
+      margin-top: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Aliquot Plate Excel Generator</h1>
+
+    <div class="note">
+      Upload an Excel file, select sheet name, enter aliquot volume, then download the processed Excel file.
+      The input sheet must contain columns named <strong>Compounds</strong> and <strong>Volume</strong>.
+    </div>
+
+    <label for="fileInput">Upload Excel file</label>
+    <input type="file" id="fileInput" accept=".xlsx,.xls" />
+
+    <label for="sheetSelect">Sheet name</label>
+    <select id="sheetSelect"></select>
+
+    <label for="aliquotVolume">Aliquot volume</label>
+    <input type="number" id="aliquotVolume" value="70" min="1" step="1" />
+
+    <label for="rounding">Rounding method</label>
+    <select id="rounding">
+      <option value="round">Round</option>
+      <option value="ceil">Ceil</option>
+      <option value="floor">Floor</option>
+    </select>
+
+    <label for="outputName">Output file name</label>
+    <input type="text" id="outputName" value="Aliquot_plate_output.xlsx" />
+
+    <button id="processButton">Process and Download Excel</button>
+
+    <div id="errorBox" class="error"></div>
+    <div id="successBox" class="success"></div>
+
+    <div id="stats" class="stats" style="display:none;">
+      <div class="stat-card">Input rows<strong id="inputRows">0</strong></div>
+      <div class="stat-card">Total aliquots<strong id="totalAliquots">0</strong></div>
+      <div class="stat-card">Number of plates<strong id="numberOfPlates">0</strong></div>
+    </div>
+
+    <div id="preview"></div>
+  </div>
+
+  <script>
+    let workbook = null;
+
+    const plateRows = ["A", "B", "C", "D", "E", "F", "G", "H"];
+    const plateCols = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    const plateCapacity = 96;
+    const positions = [];
+
+    for (const row of plateRows) {
+      for (const col of plateCols) {
+        positions.push(`${row}${col}`);
+      }
+    }
+
+    function showError(message) {
+      document.getElementById("errorBox").style.display = "block";
+      document.getElementById("errorBox").innerText = message;
+      document.getElementById("successBox").style.display = "none";
+    }
+
+    function showSuccess(message) {
+      document.getElementById("successBox").style.display = "block";
+      document.getElementById("successBox").innerText = message;
+      document.getElementById("errorBox").style.display = "none";
+    }
+
+    function clearMessages() {
+      document.getElementById("errorBox").style.display = "none";
+      document.getElementById("successBox").style.display = "none";
+    }
+
+    function normaliseRows(rows) {
+      return rows.map(row => {
+        const cleanRow = {};
+        Object.keys(row).forEach(key => {
+          cleanRow[String(key).trim()] = row[key];
+        });
+        return cleanRow;
+      });
+    }
+
+    function calculateAliquots(volume, aliquotVolume, rounding) {
+      const value = volume / aliquotVolume;
+      if (rounding === "ceil") return Math.ceil(value);
+      if (rounding === "floor") return Math.floor(value);
+      return Math.round(value);
+    }
+
+    function createPreviewTable(rows) {
+      const preview = document.getElementById("preview");
+      preview.innerHTML = "";
+
+      if (rows.length === 0) return;
+
+      const title = document.createElement("h3");
+      title.innerText = "CDD Output Preview";
+      preview.appendChild(title);
+
+      const table = document.createElement("table");
+      const headers = Object.keys(rows[0]);
+
+      const thead = document.createElement("thead");
+      const headerRow = document.createElement("tr");
+      headers.forEach(header => {
+        const th = document.createElement("th");
+        th.innerText = header;
+        headerRow.appendChild(th);
+      });
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+
+      const tbody = document.createElement("tbody");
+      rows.slice(0, 15).forEach(row => {
+        const tr = document.createElement("tr");
+        headers.forEach(header => {
+          const td = document.createElement("td");
+          td.innerText = row[header] ?? "";
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      preview.appendChild(table);
+    }
+
+    document.getElementById("fileInput").addEventListener("change", function(event) {
+      clearMessages();
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          const data = new Uint8Array(e.target.result);
+          workbook = XLSX.read(data, { type: "array" });
+
+          const sheetSelect = document.getElementById("sheetSelect");
+          sheetSelect.innerHTML = "";
+          workbook.SheetNames.forEach(name => {
+            const option = document.createElement("option");
+            option.value = name;
+            option.text = name;
+            sheetSelect.appendChild(option);
+          });
+
+          showSuccess("Excel file loaded. Please select sheet and process.");
+        } catch (error) {
+          showError("Could not read Excel file: " + error.message);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    });
+
+    document.getElementById("processButton").addEventListener("click", function() {
+      clearMessages();
+
+      try {
+        if (!workbook) {
+          showError("Please upload an Excel file first.");
+          return;
+        }
+
+        const sheetName = document.getElementById("sheetSelect").value;
+        const aliquotVolume = Number(document.getElementById("aliquotVolume").value);
+        const rounding = document.getElementById("rounding").value;
+        let outputName = document.getElementById("outputName").value.trim();
+
+        if (!outputName.toLowerCase().endsWith(".xlsx")) {
+          outputName += ".xlsx";
+        }
+
+        if (!aliquotVolume || aliquotVolume <= 0) {
+          showError("Aliquot volume must be greater than 0.");
+          return;
+        }
+
+        const worksheet = workbook.Sheets[sheetName];
+        let inputRows = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+        inputRows = normaliseRows(inputRows);
+
+        if (inputRows.length === 0) {
+          showError("Selected sheet is empty.");
+          return;
+        }
+
+        if (!("Compounds" in inputRows[0]) || !("Volume" in inputRows[0])) {
+          showError("Missing required columns. Your sheet must contain 'Compounds' and 'Volume'.");
+          return;
+        }
+
+        const cleanedInput = [];
+        const expandedCompounds = [];
+
+        inputRows.forEach(row => {
+          const compound = row["Compounds"];
+          const volume = Number(row["Volume"]);
+
+          if (compound === "" || isNaN(volume)) return;
+
+          const numberOfAliquots = calculateAliquots(volume, aliquotVolume, rounding);
+          if (numberOfAliquots <= 0) return;
+
+          const newRow = { ...row, Number_of_aliquots: numberOfAliquots };
+          cleanedInput.push(newRow);
+
+          for (let i = 0; i < numberOfAliquots; i++) {
+            expandedCompounds.push(compound);
+          }
+        });
+
+        const totalAliquots = expandedCompounds.length;
+        const numberOfPlates = Math.ceil(totalAliquots / plateCapacity);
+        const cddOutput = [];
+        const plateGrids = {};
+
+        for (let plateNo = 0; plateNo < numberOfPlates; plateNo++) {
+          const grid = [];
+          grid.push(["", ...plateCols]);
+
+          for (const rowLetter of plateRows) {
+            grid.push([rowLetter, ...Array(12).fill("")]);
+          }
+
+          const start = plateNo * plateCapacity;
+          const end = start + plateCapacity;
+          const plateCompounds = expandedCompounds.slice(start, end);
+
+          plateCompounds.forEach((compound, index) => {
+            const position = positions[index];
+            const rowLetter = position[0];
+            const colNumber = Number(position.slice(1));
+            const gridRowIndex = plateRows.indexOf(rowLetter) + 1;
+            const gridColIndex = colNumber;
+
+            grid[gridRowIndex][gridColIndex] = compound;
+
+            cddOutput.push({
+              Plate: plateNo + 1,
+              "Location(Position)": position,
+              Compound: compound,
+              "Aliquot volume": aliquotVolume
+            });
+          });
+
+          plateGrids[`Plate_${plateNo + 1}`] = grid;
+        }
+
+        const outputWorkbook = XLSX.utils.book_new();
+
+        const inputSheet = XLSX.utils.json_to_sheet(cleanedInput);
+        XLSX.utils.book_append_sheet(outputWorkbook, inputSheet, "Input");
+
+        const cddSheet = XLSX.utils.json_to_sheet(cddOutput);
+        XLSX.utils.book_append_sheet(outputWorkbook, cddSheet, "CDD_Output");
+
+        Object.keys(plateGrids).forEach(plateName => {
+          const plateSheet = XLSX.utils.aoa_to_sheet(plateGrids[plateName]);
+          XLSX.utils.book_append_sheet(outputWorkbook, plateSheet, plateName);
+        });
+
+        XLSX.writeFile(outputWorkbook, outputName);
+
+        document.getElementById("stats").style.display = "grid";
+        document.getElementById("inputRows").innerText = cleanedInput.length;
+        document.getElementById("totalAliquots").innerText = totalAliquots;
+        document.getElementById("numberOfPlates").innerText = numberOfPlates;
+
+        createPreviewTable(cddOutput);
+        showSuccess("Processed successfully. Your Excel file should now be downloaded.");
+      } catch (error) {
+        showError("Processing failed: " + error.message);
+      }
+    });
+  </script>
+</body>
+</html>
